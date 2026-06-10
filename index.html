@@ -89,6 +89,7 @@ html,body{background:var(--black);color:var(--white);min-height:100vh;font-famil
 .ap-input{width:100%;padding:11px 0;background:transparent;border:none;border-bottom:1px solid var(--line2);color:var(--white);font-size:13px;font-family:'Noto Sans KR',sans-serif;outline:none;margin-bottom:14px;transition:border-color 0.3s;}
 .ap-input:focus{border-color:var(--gold);}
 .ap-input::placeholder{color:#444;}
+.ap-input option{background:var(--panel);color:var(--white);}
 .preset-list{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;}
 .preset-btn{padding:10px 14px;background:transparent;border:1px solid var(--line);color:var(--white2);font-size:12px;font-family:'Noto Sans KR',sans-serif;cursor:pointer;text-align:left;transition:all 0.2s;display:flex;justify-content:space-between;align-items:center;}
 .preset-btn:hover{border-color:var(--gold);color:var(--gold);}
@@ -604,7 +605,7 @@ html,body{background:var(--black);color:var(--white);min-height:100vh;font-famil
       <div class="ap-section">TPO 설정</div>
       <div class="preset-list" id="preset-list"></div>
       <label class="ap-label">적용할 반 선택</label>
-      <select class="ap-input" id="ap-target-class" style="cursor:pointer;background:#111;">
+      <select class="ap-input" id="ap-target-class" style="cursor:pointer;">
         <option value="0">전체 반 (1~14반 동일 적용)</option>
         <option value="1">1반</option><option value="2">2반</option><option value="3">3반</option>
         <option value="4">4반</option><option value="5">5반</option><option value="6">6반</option>
@@ -2210,6 +2211,10 @@ function prevSlide(){const n=currentRunwaySubs().length;if(!n)return;state.curSl
 function addReaction(key,e){
   const s=currentRunwaySubs()[state.curSlide];if(!s)return;
   if(!s.reactions)s.reactions={like:0,cool:0,creative:0,tpo:0};
+  // 버튼 위치를 renderRunway()가 DOM을 교체하기 전에 미리 계산한다.
+  // (안 하면 떨어져 나간 버튼의 rect가 0,0 → 이모지가 좌상단에 몰림)
+  const btn=(e&&e.target)?(e.target.closest('button')||e.target):null;
+  const rect=(btn&&btn.getBoundingClientRect)?btn.getBoundingClientRect():null;
   if(fsOK() && s._id){
     // 원자적 증가 — 여러 명이 동시에 눌러도 카운트가 덮어써지지 않음
     s.reactions[key]=(s.reactions[key]||0)+1; // 즉각적 화면 반응(낙관적 갱신)
@@ -2220,11 +2225,13 @@ function addReaction(key,e){
   }else{
     s.reactions[key]=(s.reactions[key]||0)+1;save();renderRunway();updateAdminUI();
   }
-  const rect=(e.target.closest('button')||e.target).getBoundingClientRect();
   const emoji=REACTIONS.find(r=>r.key===key).emoji;
+  // 버튼이 사라졌어도(rect 없음) 화면 하단 중앙에서 띄워 좌상단 쏠림을 방지
+  const cx=rect?(rect.left+rect.width/2):(window.innerWidth/2);
+  const cy=rect?rect.top:(window.innerHeight*0.82);
   for(let i=0;i<3;i++){
     const h=document.createElement('div');h.className='heart-burst';h.textContent=emoji;
-    h.style.cssText=`left:${rect.left+rect.width/2+(Math.random()-.5)*60}px;top:${rect.top+(Math.random()-.5)*20}px;animation-delay:${i*.08}s;color:#C0543A;font-size:${16+i*3}px;`;
+    h.style.cssText=`left:${cx+(Math.random()-.5)*60}px;top:${cy+(Math.random()-.5)*20}px;animation-delay:${i*.08}s;color:#C0543A;font-size:${16+i*3}px;`;
     document.body.appendChild(h);setTimeout(()=>h.remove(),1200);
   }
 }
