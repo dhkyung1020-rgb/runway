@@ -729,7 +729,8 @@ html,body{background:var(--black);color:var(--white);min-height:100vh;font-famil
         </div>
       </div>
       <div class="canvas-actions">
-        <button class="cv-btn" id="eraser-btn" onclick="toggleEraser()">🧽 아바타 지우개</button>
+        <button class="cv-btn" id="eraser-btn" onclick="setEraser('avatar')">🧽 아바타 지우개</button>
+        <button class="cv-btn" id="cloth-eraser-btn" onclick="setEraser('cloth')">🧽 코디 지우개</button>
         <label class="cv-erase-size" id="erase-size-wrap">붓 크기 <input type="range" id="erase-size" min="8" max="120" value="32" oninput="setEraserSize(this.value)"></label>
         <button class="cv-btn" id="erase-undo-btn" onclick="undoErase()" style="display:none;" disabled>↩︎ 되돌리기</button>
         <button class="cv-btn" onclick="downloadCanvasImage()">↓ PNG 저장</button>
@@ -1219,7 +1220,7 @@ function enterApp(name,classNum){
   selectedFaceId=1;
   initBodyBase();
   initFaceGrid();
-  if(eraserOn) toggleEraser();
+  if(eraserOn) eraserOff();
   document.getElementById('show-banner').style.display=DATA.showClasses[String(state.studentClass)]?'block':'none';
 }
 function updateHdrTPO(){
@@ -1244,6 +1245,7 @@ let bodyBaseEl = null;
 
 /* ══ 지우개 (얼굴형·기본 몸통·옷 지우기) ══ */
 let eraserOn = false;
+let eraseMode = null;      // 'avatar'(아바타 지우개) | 'cloth'(코디 지우개)
 let eraserSize = 32;      // 붓 지름(화면 px)
 let erasing = false;
 let lastEX = null, lastEY = null;   // 직전 지우개 좌표 (보간용)
@@ -1257,22 +1259,54 @@ function setEraserSize(v){
   const c=document.getElementById('erase-cursor');
   if(c){ c.style.width=eraserSize+'px'; c.style.height=eraserSize+'px'; }
 }
-function toggleEraser(){
-  eraserOn = !eraserOn;
+/* 지우개 모드 켜기/전환. 같은 버튼을 다시 누르면 꺼짐 */
+function setEraser(mode){
+  if(eraseMode===mode){ eraserOff(); return; }  // 같은 모드 토글 → 끄기
+  eraseMode = mode;
+  eraserOn = true;
   const oc=document.getElementById('outfit-canvas');
-  oc && oc.classList.toggle('erasing', eraserOn);
-  const btn=document.getElementById('eraser-btn');
-  if(btn){ btn.classList.toggle('gold', eraserOn); btn.textContent = eraserOn?'🧽 지우개 끄기':'🧽 아바타 지우개'; }
+  oc && oc.classList.add('erasing');
+  const aBtn=document.getElementById('eraser-btn');
+  const cBtn=document.getElementById('cloth-eraser-btn');
+  if(aBtn){ aBtn.classList.toggle('gold', mode==='avatar'); aBtn.textContent = mode==='avatar'?'🧽 지우개 끄기':'🧽 아바타 지우개'; }
+  if(cBtn){ cBtn.classList.toggle('gold', mode==='cloth'); cBtn.textContent = mode==='cloth'?'🧽 지우개 끄기':'🧽 코디 지우개'; }
   const wrap=document.getElementById('erase-size-wrap');
-  if(wrap) wrap.style.display = eraserOn?'inline-flex':'none';
+  if(wrap) wrap.style.display='inline-flex';
   const cur=document.getElementById('erase-cursor');
   if(cur){ cur.style.display='none'; cur.style.width=eraserSize+'px'; cur.style.height=eraserSize+'px'; }
-  if(eraserOn){ layers.forEach(l=>l.el&&l.el.classList.remove('selected')); faceLayerEl&&faceLayerEl.classList.remove('selected'); }
+  // 지우개 켜는 동안엔 레이어 선택 표시 해제
+  layers.forEach(l=>l.el&&l.el.classList.remove('selected'));
+  faceLayerEl&&faceLayerEl.classList.remove('selected');
   updateUndoBtn();
 }
+/* 지우개 완전히 끄기 */
+function eraserOff(){
+  eraserOn = false; eraseMode = null;
+  const oc=document.getElementById('outfit-canvas');
+  oc && oc.classList.remove('erasing');
+  const aBtn=document.getElementById('eraser-btn');
+  if(aBtn){ aBtn.classList.remove('gold'); aBtn.textContent='🧽 아바타 지우개'; }
+  const cBtn=document.getElementById('cloth-eraser-btn');
+  if(cBtn){ cBtn.classList.remove('gold'); cBtn.textContent='🧽 코디 지우개'; }
+  const wrap=document.getElementById('erase-size-wrap');
+  if(wrap) wrap.style.display='none';
+  const cur=document.getElementById('erase-cursor');
+  if(cur) cur.style.display='none';
+  updateUndoBtn();
+}
+/* 하위호환: 기존 toggleEraser() 호출은 아바타 지우개 토글로 동작 */
+function toggleEraser(){ setEraser('avatar'); }
 
 /* ── 되돌리기 ── */
+/* 준비된 옷 레이어 캔버스 목록 */
+function clothCanvases(){
+  return layers
+    .map(l=>l.el && l.el.querySelector('canvas'))
+    .filter(cv=>cv && cv.dataset.ready);
+}
 function eraseTargets(){
+  if(eraseMode==='cloth') return clothCanvases();
+  // 아바타 모드: 얼굴 + 몸통
   const t=[];
   if(faceLayerEl){ const cv=faceLayerEl.querySelector('canvas'); if(cv && cv.dataset.ready) t.push(cv); }
   if(bodyBaseEl){ const cv=bodyBaseEl.querySelector('canvas'); if(cv && cv.dataset.ready) t.push(cv); }
@@ -1346,12 +1380,16 @@ function stampBrush(ctx, ix, iy, rx, ry){
   ctx.restore();
 }
 
-/* 커서 한 지점에서 아바타(얼굴·몸통) 캔버스를 지운다. 옷은 지우지 않음 */
+/* 커서 한 지점에서 현재 모드의 대상 캔버스를 지운다.
+   - avatar: 얼굴·몸통(contain)   - cloth: 옷 레이어(fill) */
 function eraseDab(cx, cy){
   const cands=[];
-  if(faceLayerEl){ const cv=faceLayerEl.querySelector('canvas'); if(cv) cands.push({el:faceLayerEl,cv,fit:'contain'}); }
-  // 옷 레이어는 지우개 대상에서 제외 (아바타만 지움)
-  if(bodyBaseEl){ const cv=bodyBaseEl.querySelector('canvas'); if(cv) cands.push({el:bodyBaseEl,cv,fit:'contain'}); }
+  if(eraseMode==='cloth'){
+    layers.forEach(l=>{ if(l.el){ const cv=l.el.querySelector('canvas'); if(cv) cands.push({el:l.el, cv, fit:'fill'}); } });
+  }else{
+    if(faceLayerEl){ const cv=faceLayerEl.querySelector('canvas'); if(cv) cands.push({el:faceLayerEl,cv,fit:'contain'}); }
+    if(bodyBaseEl){ const cv=bodyBaseEl.querySelector('canvas'); if(cv) cands.push({el:bodyBaseEl,cv,fit:'contain'}); }
+  }
   for(const c of cands){
     if(!c.cv.dataset.ready) continue;
     const m=mapToCanvas(c.el, c.cv, c.fit, cx, cy);
