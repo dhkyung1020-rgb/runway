@@ -836,6 +836,44 @@ html,body{background:var(--black);color:var(--white);min-height:100vh;font-famil
   </div>
 </div>
 
+<!-- ════════════════ Firebase (실시간 기기 간 공유) ════════════════ -->
+<script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore-compat.js"></script>
+<script>
+/*
+ ┌─────────────────────────────────────────────────────────────┐
+ │  ⬇⬇⬇  본인 Firebase 프로젝트 설정을 아래에 붙여넣으세요  ⬇⬇⬇      │
+ │  (Firebase 콘솔 → 프로젝트 설정 → '내 앱' → 웹 앱 SDK 설정)      │
+ │  붙여넣기 전까지는 기존처럼 '이 기기에서만' 저장됩니다.            │
+ └─────────────────────────────────────────────────────────────┘
+*/
+const firebaseConfig = {
+  apiKey: "AIzaSyDft98oVlUWczcRlp0ga6ipVOI2MzLJAIo",
+  authDomain: "runway-e3ec5.firebaseapp.com",
+  projectId: "runway-e3ec5",
+  storageBucket: "runway-e3ec5.firebasestorage.app",
+  messagingSenderId: "236745922413",
+  appId: "1:236745922413:web:ede9b51418a546ed51ec64"
+};
+/* 여러 패션쇼(학년/학기)를 분리하고 싶으면 ROOM 값만 다르게 바꾸세요. */
+const ROOM = "default";
+
+window.__FS_OK = false;
+try {
+  if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY" && window.firebase) {
+    firebase.initializeApp(firebaseConfig);
+    window.db = firebase.firestore();
+    window.__FS_OK = true;
+    console.log("[RUNWAY] Firebase 연결됨 — 실시간 공유 모드");
+  } else {
+    console.warn("[RUNWAY] Firebase 설정이 없어 '이 기기에서만' 모드로 동작합니다.");
+  }
+} catch (e) {
+  console.error("[RUNWAY] Firebase 초기화 실패, 로컬 모드로 전환:", e);
+  window.__FS_OK = false;
+}
+function fsOK(){ return window.__FS_OK === true; }
+</script>
 <script>
 /* ══ 얼굴형 아바타 데이터 ══ */
 const FACE_AVATARS = [
@@ -960,8 +998,67 @@ let DATA={
   showClasses:{},        // 반별 패션쇼 오픈 상태 {1:true, ...}
   submissions:[],        // 제출물
 };
-function save(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(DATA));}catch(e){console.warn('저장 실패',e);}}
-function load(){try{const s=localStorage.getItem(STORAGE_KEY);if(s){const d=JSON.parse(s);DATA={...DATA,...d};DATA.classPasswords={...DEFAULT_CLASS_PASSWORDS,...(d.classPasswords||{})};}}catch(e){console.warn('로드 실패',e);}}
+/* Firestore 참조 (설정이 있을 때만) */
+function roomRef(){ return window.db.collection("rooms").doc(ROOM); }
+function subsRef(){ return roomRef().collection("submissions"); }
+/* 이름+반으로 안정적인 문서 ID (재제출 시 덮어쓰기) */
+function subDocId(classNum,name){ return String(classNum)+"__"+String(name).replace(/[\/.]/g,'-'); }
+
+/* save(): 설정(비밀번호·TPO·쇼 오픈상태)만 저장. 제출/반응은 별도 함수에서 처리.
+   - Firestore 모드: rooms/{ROOM} 문서에 설정을 기록
+   - 로컬 모드: 기존처럼 localStorage 전체 저장 */
+function save(){
+  if(fsOK()){
+    roomRef().set({
+      classPasswords:DATA.classPasswords,
+      classTPOs:DATA.classTPOs,
+      showClasses:DATA.showClasses
+    },{merge:true}).catch(e=>console.warn('설정 저장 실패',e));
+  }else{
+    try{localStorage.setItem(STORAGE_KEY,JSON.stringify(DATA));}catch(e){console.warn('저장 실패',e);}
+  }
+}
+
+/* 로컬 모드 전용 로드 */
+function load(){
+  if(fsOK())return; // Firestore 모드는 실시간 리스너가 담당
+  try{const s=localStorage.getItem(STORAGE_KEY);if(s){const d=JSON.parse(s);DATA={...DATA,...d};DATA.classPasswords={...DEFAULT_CLASS_PASSWORDS,...(d.classPasswords||{})};}}catch(e){console.warn('로드 실패',e);}
+}
+
+/* 데이터가 갱신될 때마다 현재 보고 있는 화면을 다시 그림 (실시간 반영의 핵심) */
+function refreshAfterData(){
+  const active=document.querySelector('.screen.active');
+  if(active){
+    if(active.id==='runway-screen' && typeof renderRunway==='function') renderRunway();
+    else if(active.id==='awards-screen' && typeof renderAwards==='function') renderAwards();
+    else if(active.id==='app-screen' && typeof refreshBanner==='function') refreshBanner();
+  }
+  if(document.getElementById('admin-overlay') && document.getElementById('admin-overlay').classList.contains('open')){
+    if(typeof updateAdminUI==='function') updateAdminUI();
+    if(typeof renderShowClassGrid==='function') renderShowClassGrid();
+    if(typeof updateTPONow==='function') updateTPONow();
+  }
+}
+
+/* Firestore 실시간 리스너 등록 */
+function initFirebaseData(){
+  if(!fsOK()){ load(); return; } // 설정 없으면 로컬 로드로 대체
+  // 1) 설정 문서 구독 (비밀번호·TPO·쇼 오픈상태)
+  roomRef().onSnapshot(doc=>{
+    const d=doc.exists?(doc.data()||{}):{};
+    DATA.classPasswords={...DEFAULT_CLASS_PASSWORDS,...(d.classPasswords||{})};
+    DATA.classTPOs=d.classTPOs||{};
+    DATA.showClasses=d.showClasses||{};
+    refreshAfterData();
+  },err=>console.warn('설정 구독 오류',err));
+  // 2) 제출물 컬렉션 구독 — 학생이 제출하면 즉시 모든 화면에 반영
+  subsRef().onSnapshot(snap=>{
+    DATA.submissions=snap.docs
+      .map(doc=>({...doc.data(),_id:doc.id}))
+      .sort((a,b)=>(a.timestamp||0)-(b.timestamp||0));
+    refreshAfterData();
+  },err=>console.warn('제출물 구독 오류',err));
+}
 
 /* ══ 상태 ══ */
 let state={
@@ -1879,8 +1976,7 @@ async function submitOutfit(){
   }
   const btn=document.getElementById('sub-btn');btn.disabled=true;btn.textContent='처리중...';
   const outfit=captureOutfit();
-  DATA.submissions=DATA.submissions.filter(s=>!(s.name===state.studentName&&s.classNum===state.studentClass));
-  DATA.submissions.push({
+  const sub={
     name:state.studentName,classNum:state.studentClass,
     description:desc,
     outfit:outfit,
@@ -1888,8 +1984,22 @@ async function submitOutfit(){
     timestamp:Date.now(),
     reactions:{like:0,cool:0,creative:0,tpo:0},
     selfCheck:checkedCount,
-  });
-  save();
+  };
+  try{
+    if(fsOK()){
+      // 같은 이름+반이면 같은 문서 ID라 자동으로 재제출 = 덮어쓰기
+      await subsRef().doc(subDocId(sub.classNum,sub.name)).set(sub);
+      // DATA.submissions는 실시간 리스너가 갱신
+    }else{
+      DATA.submissions=DATA.submissions.filter(s=>!(s.name===state.studentName&&s.classNum===state.studentClass));
+      DATA.submissions.push(sub);
+      save();
+    }
+  }catch(e){
+    console.error('제출 실패',e);
+    alert('제출 중 오류가 발생했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.');
+    btn.disabled=false;btn.textContent='Submit to Runway';return;
+  }
   state.submitted=true;
   btn.classList.add('submit-done');btn.textContent='Submitted to Runway';btn.disabled=true;
   updateAdminUI();
@@ -1965,8 +2075,36 @@ function renderShowClassGrid(){
   }
   g.innerHTML=h;
 }
-function clearSubs(){if(!confirm('모든 제출물을 삭제할까요?\n복구할 수 없습니다.'))return;DATA.submissions=[];save();state.submitted=false;const btn=document.getElementById('sub-btn');btn.classList.remove('submit-done');btn.textContent='Submit to Runway';btn.disabled=false;updateAdminUI();alert('초기화되었습니다.');}
-function resetAll(){if(!confirm('모든 설정·비밀번호·TPO·제출물을 공장 초기화합니다.\n진행할까요?'))return;localStorage.removeItem(STORAGE_KEY);location.reload();}
+async function clearSubs(){
+  if(!confirm('모든 제출물을 삭제할까요?\n복구할 수 없습니다.'))return;
+  if(fsOK()){
+    try{
+      const snap=await subsRef().get();
+      const batch=window.db.batch();
+      snap.docs.forEach(d=>batch.delete(d.ref));
+      await batch.commit();
+    }catch(e){console.error('제출물 삭제 실패',e);alert('삭제 중 오류가 발생했습니다.');return;}
+  }else{
+    DATA.submissions=[];save();
+  }
+  state.submitted=false;const btn=document.getElementById('sub-btn');if(btn){btn.classList.remove('submit-done');btn.textContent='Submit to Runway';btn.disabled=false;}
+  updateAdminUI();alert('초기화되었습니다.');
+}
+async function resetAll(){
+  if(!confirm('모든 설정·비밀번호·TPO·제출물을 공장 초기화합니다.\n진행할까요?'))return;
+  if(fsOK()){
+    try{
+      const snap=await subsRef().get();
+      const batch=window.db.batch();
+      snap.docs.forEach(d=>batch.delete(d.ref));
+      batch.delete(roomRef());
+      await batch.commit();
+    }catch(e){console.error('초기화 실패',e);alert('초기화 중 오류가 발생했습니다.');return;}
+  }else{
+    localStorage.removeItem(STORAGE_KEY);
+  }
+  location.reload();
+}
 function updateAdminUI(){
   document.getElementById('ap-count').textContent=DATA.submissions.length;
   document.getElementById('ap-mini-list').innerHTML=DATA.submissions.slice(-5).reverse().map(s=>{
@@ -2034,7 +2172,16 @@ function prevSlide(){const n=currentRunwaySubs().length;if(!n)return;state.curSl
 function addReaction(key,e){
   const s=currentRunwaySubs()[state.curSlide];if(!s)return;
   if(!s.reactions)s.reactions={like:0,cool:0,creative:0,tpo:0};
-  s.reactions[key]=(s.reactions[key]||0)+1;save();renderRunway();updateAdminUI();
+  if(fsOK() && s._id){
+    // 원자적 증가 — 여러 명이 동시에 눌러도 카운트가 덮어써지지 않음
+    s.reactions[key]=(s.reactions[key]||0)+1; // 즉각적 화면 반응(낙관적 갱신)
+    subsRef().doc(s._id).update({
+      ['reactions.'+key]: firebase.firestore.FieldValue.increment(1)
+    }).catch(err=>console.warn('반응 저장 실패',err));
+    renderRunway();
+  }else{
+    s.reactions[key]=(s.reactions[key]||0)+1;save();renderRunway();updateAdminUI();
+  }
   const rect=(e.target.closest('button')||e.target).getBoundingClientRect();
   const emoji=REACTIONS.find(r=>r.key===key).emoji;
   for(let i=0;i<3;i++){
@@ -2101,7 +2248,7 @@ function initDeselect(){
 }
 
 /* ══ 초기화 ══ */
-load();
+initFirebaseData();   // Firestore 실시간 구독 시작 (설정 없으면 자동으로 로컬 로드)
 initEntry();
 initEraser();
 initDeselect();
