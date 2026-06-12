@@ -312,10 +312,38 @@ html,body{background:var(--black);color:var(--white);min-height:100vh;font-famil
 .cloth-layer.selected .layer-del,
 .cloth-layer.selected .layer-order{display:flex;}
 
+/* 회전 핸들 (옷·얼굴 공용 형태) */
+.layer-rot,.face-layer-rot{
+  position:absolute;top:-30px;left:50%;transform:translateX(-50%);
+  width:20px;height:20px;border-radius:50%;
+  background:var(--gold);border:1px solid var(--black);
+  cursor:grab;z-index:6;display:none;align-items:center;justify-content:center;
+  color:var(--black);font-size:11px;line-height:1;
+}
+.layer-rot::before,.face-layer-rot::before{
+  content:'';position:absolute;top:19px;left:50%;width:1px;height:12px;
+  background:var(--gold);transform:translateX(-50%);
+}
+.face-layer-rot{background:rgba(201,168,76,0.9);}
+.face-layer-rot::before{background:rgba(201,168,76,0.9);}
+.cloth-layer.selected .layer-rot{display:flex;}
+.face-layer.selected .face-layer-rot{display:flex;}
+.outfit-canvas.erasing .layer-rot,.outfit-canvas.erasing .face-layer-rot,
+.outfit-canvas.lassoing .layer-rot,.outfit-canvas.lassoing .face-layer-rot{display:none !important;}
+
 /* 레이어를 canvas로 렌더 (지우개 지원) */
 .body-base canvas{display:block;width:100%;height:100%;object-fit:contain;}
 .face-layer canvas{display:block;width:100%;height:100%;object-fit:contain;pointer-events:none;}
 .cloth-layer canvas{display:block;width:100%;height:100%;object-fit:fill;pointer-events:none;}
+/* 올가미(자유 선택) 모드 */
+#lasso-overlay{position:absolute;inset:0;z-index:50;pointer-events:none;display:none;}
+.outfit-canvas.lassoing #lasso-overlay{display:block;}
+.outfit-canvas.lassoing{cursor:crosshair;}
+.outfit-canvas.lassoing .cloth-layer,.outfit-canvas.lassoing .face-layer,.outfit-canvas.lassoing .body-base{cursor:crosshair;}
+.outfit-canvas.lassoing .layer-handle-e,.outfit-canvas.lassoing .layer-handle-w,.outfit-canvas.lassoing .layer-handle-s,.outfit-canvas.lassoing .layer-handle-n,.outfit-canvas.lassoing .layer-del,.outfit-canvas.lassoing .layer-order,.outfit-canvas.lassoing .face-layer-handle{display:none !important;}
+.lasso-hint{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:51;background:rgba(27,23,18,0.82);color:#FBF9F5;font-size:11px;letter-spacing:1px;padding:7px 14px;border-radius:14px;pointer-events:none;display:none;white-space:nowrap;}
+.outfit-canvas.lassoing .lasso-hint{display:block;}
+
 /* 지우개 모드 */
 .outfit-canvas.erasing{cursor:none;}
 .outfit-canvas.erasing .body-base{pointer-events:auto;}
@@ -732,10 +760,14 @@ html,body{background:var(--black);color:var(--white);min-height:100vh;font-famil
           <div class="canvas-empty-icon">✦</div>
           <div class="canvas-empty-text">우측에서 옷 사진을 업로드하면<br>여기에 레이어로 추가됩니다</div>
         </div>
+        <canvas id="lasso-overlay"></canvas>
+        <div class="lasso-hint" id="lasso-hint">떼어낼 부분(예: 손)을 둘러 그리세요</div>
       </div>
       <div class="canvas-actions">
         <button class="cv-btn" id="eraser-btn" onclick="setEraser('avatar')">🧽 아바타 지우개</button>
         <button class="cv-btn" id="cloth-eraser-btn" onclick="setEraser('cloth')">🧽 코디 지우개</button>
+        <button class="cv-btn" id="lasso-btn" onclick="toggleLasso()">✂️ 올가미 떼어내기</button>
+        <button class="cv-btn" id="lasso-undo-btn" onclick="undoLasso()" style="display:none;" disabled>↩︎ 떼어내기 취소</button>
         <label class="cv-erase-size" id="erase-size-wrap">붓 크기 <input type="range" id="erase-size" min="8" max="120" value="32" oninput="setEraserSize(this.value)"></label>
         <button class="cv-btn" id="erase-undo-btn" onclick="undoErase()" style="display:none;" disabled>↩︎ 되돌리기</button>
         <button class="cv-btn" onclick="downloadCanvasImage()">↓ PNG 저장</button>
@@ -1281,6 +1313,7 @@ function setEraserSize(v){
 /* 지우개 모드 켜기/전환. 같은 버튼을 다시 누르면 꺼짐 */
 function setEraser(mode){
   if(eraseMode===mode){ eraserOff(); return; }  // 같은 모드 토글 → 끄기
+  if(typeof lassoOn!=='undefined' && lassoOn) lassoOff();
   eraseMode = mode;
   eraserOn = true;
   const oc=document.getElementById('outfit-canvas');
@@ -1447,6 +1480,195 @@ function moveEraseCursor(cx, cy){
   c.style.top=cy+'px';
 }
 
+/* ══ 회전 (옷 레이어·얼굴 공용) ══ */
+let faceLayerRot=0;
+/* 핸들 위치(요소 중심 기준)로 각도 계산: 위쪽이 0도 */
+function rotationFromPointer(el, px, py){
+  const r=el.getBoundingClientRect();
+  const cx=r.left+r.width/2, cy=r.top+r.height/2;
+  return Math.atan2(py-cy, px-cx)*180/Math.PI + 90;
+}
+/* 회전 핸들 드래그 연결. applyFn(deg) 가 상태저장+transform적용 담당 */
+function attachRotate(handle, el, applyFn){
+  let rotating=false;
+  handle.addEventListener('mousedown', e=>{ e.preventDefault(); e.stopPropagation(); rotating=true; });
+  document.addEventListener('mousemove', e=>{ if(rotating) applyFn(Math.round(rotationFromPointer(el,e.clientX,e.clientY))); });
+  document.addEventListener('mouseup', ()=>{ rotating=false; });
+  handle.addEventListener('touchstart', e=>{ e.stopPropagation(); rotating=true; }, {passive:true});
+  handle.addEventListener('touchmove', e=>{ if(!rotating) return; const t=e.touches[0]; applyFn(Math.round(rotationFromPointer(el,t.clientX,t.clientY))); }, {passive:true});
+  handle.addEventListener('touchend', ()=>{ rotating=false; }, {passive:true});
+}
+/* 합성 시 중심을 축으로 회전시켜 그리기 */
+function drawRotated(ctx, drawFn, cx, cy, rot){
+  if(!rot){ drawFn(); return; }
+  ctx.save(); ctx.translate(cx,cy); ctx.rotate(rot*Math.PI/180); ctx.translate(-cx,-cy); drawFn(); ctx.restore();
+}
+
+/* ══ 자유 올가미: 일부분(예: 손) 떼어내 옮기기 ══ */
+let lassoOn=false, lassoDrawing=false, lassoPts=[];
+let lassoUndoStack=[];
+
+function toggleLasso(){ lassoOn ? lassoOff() : lassoTurnOn(); }
+function lassoTurnOn(){
+  if(typeof eraserOn!=='undefined' && eraserOn) eraserOff();
+  lassoOn=true; lassoDrawing=false; lassoPts=[];
+  const oc=document.getElementById('outfit-canvas');
+  if(oc){
+    oc.classList.add('lassoing');
+    const ov=document.getElementById('lasso-overlay');
+    if(ov){ ov.width=oc.clientWidth; ov.height=oc.clientHeight; }
+  }
+  layers.forEach(l=>l.el&&l.el.classList.remove('selected'));
+  const b=document.getElementById('lasso-btn'); if(b){ b.classList.add('gold'); b.textContent='✂️ 올가미 끄기'; }
+}
+function lassoOff(){
+  lassoOn=false; lassoDrawing=false;
+  const oc=document.getElementById('outfit-canvas'); if(oc) oc.classList.remove('lassoing');
+  clearLassoOverlay();
+  const b=document.getElementById('lasso-btn'); if(b){ b.classList.remove('gold'); b.textContent='✂️ 올가미 떼어내기'; }
+}
+function clearLassoOverlay(){
+  const ov=document.getElementById('lasso-overlay');
+  if(ov){ const c=ov.getContext('2d'); c.clearRect(0,0,ov.width,ov.height); }
+  lassoPts=[];
+}
+function drawLassoPreview(){
+  const ov=document.getElementById('lasso-overlay'); if(!ov) return;
+  const ctx=ov.getContext('2d'); ctx.clearRect(0,0,ov.width,ov.height);
+  if(!lassoPts.length) return;
+  const oc=document.getElementById('outfit-canvas').getBoundingClientRect();
+  ctx.beginPath();
+  lassoPts.forEach((p,i)=>{ const x=p.cx-oc.left, y=p.cy-oc.top; i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  if(lassoPts.length>2) ctx.closePath();
+  ctx.fillStyle='rgba(192,84,58,0.14)'; ctx.fill();
+  ctx.lineWidth=1.6; ctx.setLineDash([6,4]); ctx.strokeStyle='#C0543A'; ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+/* 화면점 → 특정 캔버스 내부좌표 (clamp 없이; bbox 단계에서 캔버스 범위로 제한) */
+function lassoMapPoint(el, cv, fit, cx, cy){
+  const r=el.getBoundingClientRect();
+  if(!r.width||!r.height) return null;
+  const cX=r.left+r.width/2, cY=r.top+r.height/2;
+  const rot=(parseFloat(el.dataset.rot)||0)*Math.PI/180;
+  let px=cx-cX, py=cy-cY;
+  if(rot){ const c=Math.cos(-rot), s=Math.sin(-rot); const nx=px*c-py*s, ny=px*s+py*c; px=nx; py=ny; }
+  const boxW=el.offsetWidth||r.width, boxH=el.offsetHeight||r.height;
+  const bx=px+boxW/2, by=py+boxH/2;
+  if(fit==='fill') return { ix:bx*(cv.width/boxW), iy:by*(cv.height/boxH) };
+  const scale=Math.min(boxW/cv.width, boxH/cv.height);
+  const ox=(boxW-cv.width*scale)/2, oy=(boxH-cv.height*scale)/2;
+  return { ix:(bx-ox)/scale, iy:(by-oy)/scale };
+}
+/* 올가미 중심이 들어있는 가장 위쪽 레이어(또는 선택 레이어/몸통)를 대상으로 */
+function lassoPickSource(ccx, ccy){
+  const cands=[];
+  layers.forEach((l,i)=>{ if(l.el){ const cv=l.el.querySelector('canvas'); if(cv&&cv.dataset.ready) cands.push({el:l.el,cv,fit:'fill',z:i+1,layer:l}); } });
+  if(typeof faceLayerEl!=='undefined' && faceLayerEl){ const cv=faceLayerEl.querySelector('canvas'); if(cv&&cv.dataset.ready) cands.push({el:faceLayerEl,cv,fit:'contain',z:9990}); }
+  if(typeof bodyBaseEl!=='undefined' && bodyBaseEl){ const cv=bodyBaseEl.querySelector('canvas'); if(cv&&cv.dataset.ready) cands.push({el:bodyBaseEl,cv,fit:'contain',z:-1}); }
+  const hit=cands.filter(c=>{ const r=c.el.getBoundingClientRect(); return ccx>=r.left&&ccx<=r.right&&ccy>=r.top&&ccy<=r.bottom; });
+  if(!hit.length) return null;
+  const act=hit.find(c=>c.layer&&c.layer.id===activeLayerId);
+  if(act) return act;
+  hit.sort((a,b)=>b.z-a.z);
+  return hit[0];
+}
+
+function applyLasso(){
+  if(lassoPts.length<3){ clearLassoOverlay(); return; }
+  let sx=0,sy=0; lassoPts.forEach(p=>{sx+=p.cx;sy+=p.cy;});
+  const ccx=sx/lassoPts.length, ccy=sy/lassoPts.length;
+  const src=lassoPickSource(ccx,ccy);
+  if(!src){ clearLassoOverlay(); alert('떼어낼 사진(레이어) 위에서 영역을 그려 주세요.\n먼저 옷·아바타 사진을 추가하거나 선택하세요.'); return; }
+  const cv=src.cv;
+  const poly=lassoPts.map(p=>lassoMapPoint(src.el,cv,src.fit,p.cx,p.cy)).filter(Boolean);
+  if(poly.length<3){ clearLassoOverlay(); return; }
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  poly.forEach(p=>{minX=Math.min(minX,p.ix);minY=Math.min(minY,p.iy);maxX=Math.max(maxX,p.ix);maxY=Math.max(maxY,p.iy);});
+  minX=Math.max(0,Math.floor(minX)); minY=Math.max(0,Math.floor(minY));
+  maxX=Math.min(cv.width,Math.ceil(maxX)); maxY=Math.min(cv.height,Math.ceil(maxY));
+  const bw=maxX-minX, bh=maxY-minY;
+  if(bw<4||bh<4){ clearLassoOverlay(); alert('영역이 너무 작아요. 조금 더 크게 둘러 그려 보세요.'); return; }
+
+  // 되돌리기용 스냅샷(원본 캔버스 상태)
+  const undoStep={cv, data:null, newLayerId:null};
+  try{ undoStep.data=cv.getContext('2d',{willReadFrequently:true}).getImageData(0,0,cv.width,cv.height); }catch(e){}
+
+  // 1) 떼어낼 조각을 다각형으로 클립해서 추출
+  const cut=document.createElement('canvas'); cut.width=bw; cut.height=bh;
+  const cctx=cut.getContext('2d',{willReadFrequently:true});
+  cctx.save(); cctx.beginPath();
+  poly.forEach((p,i)=>{ const x=p.ix-minX,y=p.iy-minY; i?cctx.lineTo(x,y):cctx.moveTo(x,y); });
+  cctx.closePath(); cctx.clip();
+  cctx.drawImage(cv,-minX,-minY);
+  cctx.restore();
+  const cutUrl=cut.toDataURL('image/png');
+
+  // 2) 원본에서 해당 영역 지우기(구멍)
+  const sctx=cv.getContext('2d',{willReadFrequently:true});
+  sctx.save(); sctx.globalCompositeOperation='destination-out';
+  sctx.beginPath();
+  poly.forEach((p,i)=>{ i?sctx.lineTo(p.ix,p.iy):sctx.moveTo(p.ix,p.iy); });
+  sctx.closePath(); sctx.fill();
+  sctx.restore();
+
+  // 3) 원래 자리에 정확히 겹쳐서 새 '조각' 레이어 생성 → 자유 이동/회전 가능
+  const r=src.el.getBoundingClientRect();
+  const ocr=document.getElementById('outfit-canvas').getBoundingClientRect();
+  const srcRot=parseFloat(src.el.dataset.rot)||0;
+  const boxW=src.el.offsetWidth||r.width, boxH=src.el.offsetHeight||r.height;
+  const bcx=minX+bw/2, bcy=minY+bh/2; // 잘라낸 영역 중심(캔버스 좌표)
+  let scX,scY,ox=0,oy=0;
+  if(src.fit==='fill'){ scX=boxW/cv.width; scY=boxH/cv.height; }
+  else { const scale=Math.min(boxW/cv.width, boxH/cv.height); scX=scY=scale; ox=(boxW-cv.width*scale)/2; oy=(boxH-cv.height*scale)/2; }
+  const exW=bw*scX, exH=bh*scY;
+  // 요소(미회전) 좌상단 기준 로컬 중심 → 요소중심 기준
+  const lrx=(ox+bcx*scX)-boxW/2, lry=(oy+bcy*scY)-boxH/2;
+  const th=srcRot*Math.PI/180, cs=Math.cos(th), sn=Math.sin(th);
+  const rcx=lrx*cs-lry*sn, rcy=lrx*sn+lry*cs;
+  const elCenterX=(r.left-ocr.left)+r.width/2, elCenterY=(r.top-ocr.top)+r.height/2;
+  const exX=elCenterX+rcx-exW/2, exY=elCenterY+rcy-exH/2;
+  const newLayer=addLayer('떼어낸 조각', cutUrl, {x:exX,y:exY,w:exW,h:exH,rot:srcRot});
+  if(newLayer) undoStep.newLayerId=newLayer.id;
+  if(undoStep.data){ lassoUndoStack.push(undoStep); if(lassoUndoStack.length>20) lassoUndoStack.shift(); updateLassoUndoBtn(); }
+
+  clearLassoOverlay();
+  lassoOff(); // 모드 해제 → 떼어낸 조각을 바로 끌어서 옮길 수 있음
+}
+
+function undoLasso(){
+  const step=lassoUndoStack.pop(); if(!step) return;
+  if(step.newLayerId){ const ex=layers.find(l=>l.id===step.newLayerId); if(ex) removeLayer(step.newLayerId); }
+  try{ step.cv.getContext('2d',{willReadFrequently:true}).putImageData(step.data,0,0); }catch(e){}
+  updateLassoUndoBtn();
+}
+function updateLassoUndoBtn(){
+  const b=document.getElementById('lasso-undo-btn'); if(!b) return;
+  b.style.display = lassoUndoStack.length ? 'inline-block' : 'none';
+  b.disabled = lassoUndoStack.length===0;
+}
+
+function initLasso(){
+  const oc=document.getElementById('outfit-canvas'); if(!oc) return;
+  oc.addEventListener('mousedown', e=>{
+    if(!lassoOn) return; e.preventDefault(); e.stopPropagation();
+    lassoDrawing=true; lassoPts=[{cx:e.clientX,cy:e.clientY}]; drawLassoPreview();
+  }, true);
+  oc.addEventListener('touchstart', e=>{
+    if(!lassoOn) return; e.preventDefault(); e.stopPropagation();
+    const t=e.touches[0]; lassoDrawing=true; lassoPts=[{cx:t.clientX,cy:t.clientY}]; drawLassoPreview();
+  }, true);
+  window.addEventListener('mousemove', e=>{
+    if(!lassoOn||!lassoDrawing) return; lassoPts.push({cx:e.clientX,cy:e.clientY}); drawLassoPreview();
+  });
+  window.addEventListener('touchmove', e=>{
+    if(!lassoOn||!lassoDrawing) return; e.preventDefault();
+    const t=e.touches[0]; lassoPts.push({cx:t.clientX,cy:t.clientY}); drawLassoPreview();
+  }, {passive:false});
+  window.addEventListener('mouseup', ()=>{ if(!lassoOn||!lassoDrawing) return; lassoDrawing=false; applyLasso(); });
+  window.addEventListener('touchend', ()=>{ if(!lassoOn||!lassoDrawing) return; lassoDrawing=false; applyLasso(); });
+}
+
 function initEraser(){
   const oc=document.getElementById('outfit-canvas');
   if(!oc) return;
@@ -1584,7 +1806,8 @@ function renderFaceLayer(){
 
   const el = document.createElement('div');
   el.className = 'face-layer selected';
-  el.style.cssText = `left:${faceLayerPos.x}px;top:${faceLayerPos.y}px;width:${faceLayerPos.w}px;height:${faceLayerPos.h}px;z-index:200;`;
+  el.style.cssText = `left:${faceLayerPos.x}px;top:${faceLayerPos.y}px;width:${faceLayerPos.w}px;height:${faceLayerPos.h}px;z-index:200;transform:rotate(${faceLayerRot}deg);`;
+  el.dataset.rot=faceLayerRot;
 
   const cvs = document.createElement('canvas');
   const im = new Image();
@@ -1597,9 +1820,15 @@ function renderFaceLayer(){
   handle.className = 'face-layer-handle';
   el.appendChild(handle);
 
+  // 회전 핸들
+  const rotH = document.createElement('div');
+  rotH.className = 'face-layer-rot'; rotH.title='드래그하여 회전'; rotH.textContent='⟳';
+  el.appendChild(rotH);
+  attachRotate(rotH, el, deg=>{ faceLayerRot=deg; el.dataset.rot=deg; el.style.transform='rotate('+deg+'deg)'; });
+
   // 클릭하면 selected 강조 (다른 레이어 선택은 해제 → 한 번에 하나만 점선 표시)
   el.addEventListener('mousedown', e => {
-    if(e.target === handle) return;
+    if(e.target === handle || e.target === rotH) return;
     layers.forEach(l=>l.el&&l.el.classList.remove('selected'));
     if(activeLayerId!==null){ activeLayerId=null; renderLayerList(); }
     el.classList.add('selected');
@@ -1615,7 +1844,7 @@ function makeFaceDraggable(el, resizeHandle){
   // 이동
   let moving=false, startX, startY, origX, origY;
   el.addEventListener('mousedown', e => {
-    if(e.target === resizeHandle) return;
+    if(e.target === resizeHandle || (e.target.className&&e.target.className.indexOf('face-layer-rot')>-1)) return;
     e.preventDefault(); moving=true;
     startX=e.clientX; startY=e.clientY;
     origX=faceLayerPos.x; origY=faceLayerPos.y;
@@ -1631,7 +1860,7 @@ function makeFaceDraggable(el, resizeHandle){
 
   // 터치 이동
   el.addEventListener('touchstart', e => {
-    if(e.target === resizeHandle) return;
+    if(e.target === resizeHandle || (e.target.className&&e.target.className.indexOf('face-layer-rot')>-1)) return;
     const t=e.touches[0]; moving=true;
     startX=t.clientX; startY=t.clientY;
     origX=faceLayerPos.x; origY=faceLayerPos.y;
@@ -1831,17 +2060,21 @@ async function removeBackground(dataUrl){
   });
 }
 
-function addLayer(name,dataUrl){
+function addLayer(name,dataUrl,opts){
   const id='layer_'+(++layerCounter);
   const canvas=document.getElementById('outfit-canvas');
   const cw=canvas.clientWidth,ch=canvas.clientHeight;
-  const defaultW=Math.round(cw*0.55),defaultH=Math.round(ch*0.65);
-  const x=Math.round((cw-defaultW)/2),y=Math.round((ch-defaultH)/4);
-  const layerObj={id,name,dataUrl,x,y,w:defaultW,h:defaultH};
+  const w=(opts&&opts.w!=null)?Math.max(20,Math.round(opts.w)):Math.round(cw*0.55);
+  const h=(opts&&opts.h!=null)?Math.max(20,Math.round(opts.h)):Math.round(ch*0.65);
+  const x=(opts&&opts.x!=null)?Math.round(opts.x):Math.round((cw-w)/2);
+  const y=(opts&&opts.y!=null)?Math.round(opts.y):Math.round((ch-h)/4);
+  const rot=(opts&&opts.rot!=null)?Math.round(opts.rot):0;
+  const layerObj={id,name,dataUrl,x,y,w,h,rot};
   layers.push(layerObj);
   const el=document.createElement('div');
   el.className='cloth-layer';el.id='el_'+id;
-  el.style.cssText=`left:${x}px;top:${y}px;width:${defaultW}px;height:${defaultH}px;z-index:${layers.length};`;
+  el.style.cssText=`left:${x}px;top:${y}px;width:${w}px;height:${h}px;z-index:${layers.length};transform:rotate(${rot}deg);`;
+  el.dataset.rot=rot;
   const img=document.createElement('canvas');
   const im=new Image();
   im.onload=()=>{ img.width=im.naturalWidth||im.width; img.height=im.naturalHeight||im.height; img.getContext('2d',{willReadFrequently:true}).drawImage(im,0,0); img.dataset.ready='1'; };
@@ -1850,14 +2083,17 @@ function addLayer(name,dataUrl){
   const handleW=document.createElement('div');handleW.className='layer-handle-w';el.appendChild(handleW);
   const handleS=document.createElement('div');handleS.className='layer-handle-s';el.appendChild(handleS);
   const handleN=document.createElement('div');handleN.className='layer-handle-n';el.appendChild(handleN);
+  const rotH=document.createElement('div');rotH.className='layer-rot';rotH.title='드래그하여 회전';rotH.textContent='⟳';el.appendChild(rotH);
   const del=document.createElement('div');del.className='layer-del';del.textContent='✕';
   del.onclick=(e)=>{e.stopPropagation();removeLayer(id);};el.appendChild(del);
   canvas.appendChild(el);layerObj.el=el;
   makeDraggable(el,layerObj,handleE,handleW,handleS,handleN);
-  const handles=[handleE,handleW,handleS,handleN];
+  attachRotate(rotH, el, deg=>{ layerObj.rot=deg; el.dataset.rot=deg; el.style.transform='rotate('+deg+'deg)'; });
+  const handles=[handleE,handleW,handleS,handleN,rotH];
   el.addEventListener('mousedown',e=>{if(handles.includes(e.target)||e.target===del)return;selectLayer(id);});
   el.addEventListener('touchstart',e=>{if(handles.includes(e.target)||e.target===del)return;selectLayer(id);},{passive:true});
   selectLayer(id);updateCanvasEmpty();renderLayerList();
+  return layerObj;
 }
 
 function makeDraggable(el,layerObj,handleE,handleW,handleS,handleN){
@@ -1866,10 +2102,10 @@ function makeDraggable(el,layerObj,handleE,handleW,handleS,handleN){
   function onMoveStart(ex,ey){moving=true;startX=ex;startY=ey;origX=layerObj.x;origY=layerObj.y;selectLayer(layerObj.id);}
   function onMoveMove(ex,ey){if(!moving)return;layerObj.x=origX+(ex-startX);layerObj.y=origY+(ey-startY);el.style.left=layerObj.x+'px';el.style.top=layerObj.y+'px';}
   function onMoveEnd(){moving=false;}
-  el.addEventListener('mousedown',e=>{if(allHandles.includes(e.target)||e.target.className==='layer-del')return;e.preventDefault();onMoveStart(e.clientX,e.clientY);});
+  el.addEventListener('mousedown',e=>{if(allHandles.includes(e.target)||e.target.className==='layer-del'||e.target.className==='layer-rot')return;e.preventDefault();onMoveStart(e.clientX,e.clientY);});
   document.addEventListener('mousemove',e=>{if(moving)onMoveMove(e.clientX,e.clientY);});
   document.addEventListener('mouseup',onMoveEnd);
-  el.addEventListener('touchstart',e=>{if(allHandles.includes(e.target)||e.target.className==='layer-del')return;const t=e.touches[0];onMoveStart(t.clientX,t.clientY);},{passive:true});
+  el.addEventListener('touchstart',e=>{if(allHandles.includes(e.target)||e.target.className==='layer-del'||e.target.className==='layer-rot')return;const t=e.touches[0];onMoveStart(t.clientX,t.clientY);},{passive:true});
   el.addEventListener('touchmove',e=>{const t=e.touches[0];onMoveMove(t.clientX,t.clientY);},{passive:true});
   el.addEventListener('touchend',onMoveEnd,{passive:true});
 
@@ -1939,6 +2175,8 @@ function updateCanvasEmpty(){
 }
 function clearCanvas(){
   if(layers.length&&!confirm('캔버스 위 옷 레이어를 모두 지울까요?\n(몸통·얼굴 아바타는 유지됩니다)'))return;
+  if(typeof lassoOn!=='undefined'&&lassoOn) lassoOff();
+  lassoUndoStack=[]; if(typeof updateLassoUndoBtn==='function') updateLassoUndoBtn();
   layers.forEach(l=>l.el?.remove());layers=[];activeLayerId=null;
   updateCanvasEmpty();renderLayerList();
   // 몸통·얼굴 유지
@@ -1958,9 +2196,9 @@ function downloadCanvasImage(){
   if(bodyCv && bodyCv.dataset.ready) drawContainImg(ctx, bodyCv, layout.bodyX, layout.bodyY, layout.bodyW, layout.bodyH);
   layers.slice()
     .sort((a,b)=>(parseInt(a.el?.style.zIndex||'1')-parseInt(b.el?.style.zIndex||'1')))
-    .forEach(l=>{ const c=l.el && l.el.querySelector('canvas'); if(c && c.dataset.ready) ctx.drawImage(c, l.x, l.y, l.w, l.h); });
+    .forEach(l=>{ const c=l.el && l.el.querySelector('canvas'); if(c && c.dataset.ready) drawRotated(ctx, ()=>ctx.drawImage(c, l.x, l.y, l.w, l.h), l.x+l.w/2, l.y+l.h/2, l.rot||0); });
   const faceCv=faceLayerEl && faceLayerEl.querySelector('canvas');
-  if(faceCv && faceCv.dataset.ready && faceLayerPos.w>0) drawContainImg(ctx, faceCv, faceLayerPos.x, faceLayerPos.y, faceLayerPos.w, faceLayerPos.h);
+  if(faceCv && faceCv.dataset.ready && faceLayerPos.w>0) drawRotated(ctx, ()=>drawContainImg(ctx, faceCv, faceLayerPos.x, faceLayerPos.y, faceLayerPos.w, faceLayerPos.h), faceLayerPos.x+faceLayerPos.w/2, faceLayerPos.y+faceLayerPos.h/2, faceLayerRot||0);
 
   ctx.fillStyle='#C0543A';ctx.font='bold 13px sans-serif';ctx.fillText(state.studentName+' — '+state.studentClass+'반',12,ch-18);
   if(state.tpo){ctx.fillStyle='#9C948A';ctx.font='10px sans-serif';ctx.fillText(state.tpo.t+', '+state.tpo.p+' / '+state.tpo.o,12,ch-6);}
@@ -1980,11 +2218,11 @@ function captureOutfit(){
   // 옷 (z-index 오름차순, fill)
   layers.slice()
     .sort((a,b)=>(parseInt(a.el?.style.zIndex||'1')-parseInt(b.el?.style.zIndex||'1')))
-    .forEach(l=>{ const cv=l.el && l.el.querySelector('canvas'); if(cv && cv.dataset.ready) ctx.drawImage(cv, l.x, l.y, l.w, l.h); });
+    .forEach(l=>{ const cv=l.el && l.el.querySelector('canvas'); if(cv && cv.dataset.ready) drawRotated(ctx, ()=>ctx.drawImage(cv, l.x, l.y, l.w, l.h), l.x+l.w/2, l.y+l.h/2, l.rot||0); });
   // 얼굴 (맨 위, contain)
   const faceCv=faceLayerEl && faceLayerEl.querySelector('canvas');
   if(faceCv && faceCv.dataset.ready && faceLayerPos.w>0)
-    drawContainImg(ctx, faceCv, faceLayerPos.x, faceLayerPos.y, faceLayerPos.w, faceLayerPos.h);
+    drawRotated(ctx, ()=>drawContainImg(ctx, faceCv, faceLayerPos.x, faceLayerPos.y, faceLayerPos.w, faceLayerPos.h), faceLayerPos.x+faceLayerPos.w/2, faceLayerPos.y+faceLayerPos.h/2, faceLayerRot||0);
   // 저장 용량을 위해 폭 300으로 축소
   const maxW=300; let ow=cw, oh=ch;
   if(ow>maxW){ const s=maxW/ow; ow=Math.round(ow*s); oh=Math.round(oh*s); }
@@ -2344,6 +2582,7 @@ function initDeselect(){
 initFirebaseData();   // Firestore 실시간 구독 시작 (설정 없으면 자동으로 로컬 로드)
 initEntry();
 initEraser();
+initLasso();
 initDeselect();
 </script>
 </body>
