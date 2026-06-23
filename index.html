@@ -1382,8 +1382,10 @@ function resetEraseHistory(){ eraseUndoStack=[]; updateUndoBtn(); }
 function updateUndoBtn(){
   const b=document.getElementById('erase-undo-btn');
   if(!b) return;
-  b.style.display = eraserOn ? 'inline-block' : 'none';
-  b.disabled = eraseUndoStack.length===0;
+  const hasHistory = eraseUndoStack.length>0;
+  // 지우개를 꺼도 되돌릴 내용이 있으면 버튼을 계속 보이게 함
+  b.style.display = (eraserOn || hasHistory) ? 'inline-block' : 'none';
+  b.disabled = !hasHistory;
 }
 
 /* 화면 좌표 → 특정 레이어 canvas 내부 좌표 (object-fit 보정) */
@@ -1738,8 +1740,18 @@ function initBodyBase(){
   base.style.cssText = `left:${bodyX}px;top:${bodyY}px;width:${bodyW}px;height:${bodyH}px;`;
   const cvs = document.createElement('canvas');
   const im = new Image();
-  im.onload = () => { cvs.width=im.naturalWidth||im.width; cvs.height=im.naturalHeight||im.height; cvs.getContext('2d',{willReadFrequently:true}).drawImage(im,0,0); cvs.dataset.ready='1'; };
+  const paintBody = () => {
+    const w=im.naturalWidth||im.width, h=im.naturalHeight||im.height;
+    if(!w||!h) return;
+    cvs.width=w; cvs.height=h;
+    const ctx=cvs.getContext('2d',{willReadFrequently:true});
+    ctx.clearRect(0,0,w,h);
+    ctx.drawImage(im,0,0);
+    cvs.dataset.ready='1';
+  };
+  im.onload = paintBody;
   im.src = BODY_IMG;
+  if(im.complete) paintBody();
   base.appendChild(cvs);
   canvas.insertBefore(base, canvas.firstChild);
   bodyBaseEl = base;
@@ -1804,8 +1816,18 @@ function renderFaceLayer(){
 
   const cvs = document.createElement('canvas');
   const im = new Image();
-  im.onload = () => { cvs.width=im.naturalWidth||im.width; cvs.height=im.naturalHeight||im.height; cvs.getContext('2d',{willReadFrequently:true}).drawImage(im,0,0); cvs.dataset.ready='1'; };
+  const paintFace = () => {
+    const w=im.naturalWidth||im.width, h=im.naturalHeight||im.height;
+    if(!w||!h) return;
+    cvs.width=w; cvs.height=h;
+    const ctx=cvs.getContext('2d',{willReadFrequently:true});
+    ctx.clearRect(0,0,w,h);
+    ctx.drawImage(im,0,0);
+    cvs.dataset.ready='1';
+  };
+  im.onload = paintFace;
   im.src = face.src;
+  if(im.complete) paintFace();   // 캐시된 이미지는 onload가 안 뜰 수 있어 즉시 그림
   el.appendChild(cvs);
 
   // 크기 조절 핸들
