@@ -654,6 +654,8 @@ html,body{background:var(--black);color:var(--white);min-height:100vh;font-famil
       <label class="ap-label">학생용 TPO 힌트 (선택)</label>
       <input class="ap-input" id="ap-hint" placeholder="예: 활동성과 편안함이 중요해요" style="margin-bottom:16px"/>
       <button class="ap-btn btn-gold" onclick="applyTPO()">Apply TPO</button>
+      <button class="ap-btn btn-outline" style="margin-top:8px" onclick="clearTPO()">주제 없음으로 — TPO 해제</button>
+      <div class="ap-hint-line" style="margin-top:4px">선택한 반의 TPO를 지워 아이들이 주제 없이 자유롭게 연습할 수 있게 합니다.</div>
 
       <div class="ap-section">반별 비밀번호</div>
       <div class="class-pw-grid" id="class-pw-grid"></div>
@@ -676,6 +678,8 @@ html,body{background:var(--black);color:var(--white);min-height:100vh;font-famil
       </select>
       <button class="ap-btn btn-gold" onclick="goRunway(document.getElementById('view-class').value)">▶ 이 반 런웨이 관람</button>
       <button class="ap-btn btn-outline" onclick="goAwards(document.getElementById('view-class').value)">🏆 이 반 베스트 드레서</button>
+      <button class="ap-btn btn-danger" style="margin-top:8px" onclick="clearClassSubs()">🧹 이 반 제출물만 리셋</button>
+      <div class="ap-hint-line" style="margin-top:4px">위에서 선택한 반의 제출물만 지웁니다. 다른 반은 그대로 유지됩니다.</div>
 
       <div class="ap-section">데이터</div>
       <button class="ap-btn btn-danger" onclick="clearSubs()">Reset All Submissions</button>
@@ -1076,7 +1080,12 @@ function refreshAfterData(){
   if(active){
     if(active.id==='runway-screen' && typeof renderRunway==='function') renderRunway();
     else if(active.id==='awards-screen' && typeof renderAwards==='function') renderAwards();
-    else if(active.id==='app-screen' && typeof refreshBanner==='function') refreshBanner();
+    else if(active.id==='app-screen' && typeof refreshBanner==='function'){
+      refreshBanner();
+      // 관리자가 TPO를 바꾸면(적용/해제) 코디 중인 학생 헤더에 즉시 반영. 가이드 팝업은 강제로 열지 않음.
+      state.tpo=DATA.classTPOs[state.studentClass]||null;
+      if(typeof updateHdrTPO==='function') updateHdrTPO();
+    }
   }
   if(document.getElementById('admin-overlay') && document.getElementById('admin-overlay').classList.contains('open')){
     if(typeof updateAdminUI==='function') updateAdminUI();
@@ -2399,6 +2408,46 @@ async function clearSubs(){
   }
   state.submitted=false;const btn=document.getElementById('sub-btn');if(btn){btn.classList.remove('submit-done');btn.textContent='Submit to Runway';btn.disabled=false;}
   updateAdminUI();alert('초기화되었습니다.');
+}
+async function clearClassSubs(){
+  const cls=String(document.getElementById('view-class').value);
+  if(!cls)return;
+  if(!confirm(cls+'반의 제출물을 모두 삭제할까요?\n(다른 반은 그대로 유지됩니다. 복구할 수 없습니다.)'))return;
+  if(fsOK()){
+    try{
+      const snap=await subsRef().get();
+      const batch=window.db.batch();
+      snap.docs.forEach(d=>{ if(String((d.data()||{}).classNum)===cls) batch.delete(d.ref); });
+      await batch.commit();
+    }catch(e){console.error('반 제출물 삭제 실패',e);alert('삭제 중 오류가 발생했습니다.');return;}
+  }else{
+    DATA.submissions=DATA.submissions.filter(s=>String(s.classNum)!==cls);save();
+  }
+  // 이 기기에서 그 반 학생이 코디 중이면 제출 버튼 상태 초기화
+  if(String(state.studentClass)===cls){
+    state.submitted=false;const btn=document.getElementById('sub-btn');
+    if(btn){btn.classList.remove('submit-done');btn.textContent='Submit to Runway';btn.disabled=false;}
+  }
+  updateAdminUI();alert(cls+'반 제출물을 초기화했습니다.');
+}
+/* TPO 해제: 선택한 반(또는 전체)을 '주제 없음' 상태로 — 자유 연습용 */
+function clearTPO(){
+  const tc=parseInt(document.getElementById('ap-target-class').value);
+  if(tc===0){
+    if(!confirm('전체 반의 TPO를 해제하고 주제 없음 상태로 만들까요?'))return;
+    DATA.classTPOs={};
+  }else{
+    if(!confirm(tc+'반의 TPO를 해제할까요? (주제 없음 상태)'))return;
+    delete DATA.classTPOs[tc];
+  }
+  // 입력칸도 비워 화면상 함께 리셋
+  ['ap-time','ap-place','ap-occasion','ap-hint'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  save();updateTPONow();renderClassPanel(selectedClass);
+  // 이 기기에서 코디 중인 학생 화면도 즉시 갱신
+  if(document.getElementById('app-screen').classList.contains('active')){
+    state.tpo=DATA.classTPOs[state.studentClass]||null;updateHdrTPO();renderTPOGuide();
+  }
+  alert(tc===0?'전체 반 TPO를 해제했습니다. (주제 없음)':tc+'반 TPO를 해제했습니다. (주제 없음)');
 }
 async function resetAll(){
   if(!confirm('모든 설정·비밀번호·TPO·제출물을 공장 초기화합니다.\n진행할까요?'))return;
